@@ -24,9 +24,8 @@ The project focuses on tuning LOESS models and comparing different validation ap
 ## Tools
 R, tidyverse, ggplot2, knitr
 
-## Notes
-This repository includes **only my own work**.  
-Instructor solution files are intentionally not included.
+
+
 
 ---
 
