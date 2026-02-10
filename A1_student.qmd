@@ -1,0 +1,822 @@
+---
+title: "Assignment 1 - Basics of Hyperparameter Tuning: Finding the Optimal Span & Degree for LOESS"
+subtitle: "MBAN 5560 - Due January 31, 2026 (Saturday) 11:59pm"
+author: "Mina Tavakkoli Jouybari"
+date: "2026-01-26"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    theme: cosmo
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+  
+In this assignment, you will apply the self-learning methods (cross-validation and bootstrapping) covered in class (January 27) to tune the `span` and `degree` hyperparameters for LOESS regression. Your goal is to find the optimal span that minimizes prediction error and to quantify the uncertainty in your results.
+
+**Key Learning Objectives:**
+
+1. Implement grid search for hyperparameter tuning
+2. Compare simple train-test split vs k-fold CV vs bootstrap CV
+3. Report prediction error with uncertainty (mean and SD)
+4. Benchmark tuned LOESS against simpler models
+
+**Important Notes:**
+
+- You can team up with **two classmates** for this assignment (maximum 3 students per team). Submit one assignment per team.
+- Use R and Quarto for your analysis. Submit the rendered HTML file along with the QMD source file.
+- Make sure your code runs without errors and produces the expected outputs.
+- Provide interpretations and explanations for your results, not just code outputs.
+- Using LLM assistance is allowed, but you must disclose which tool you used and how it helped.
+
+---
+
+# Setup
+
+Load the required libraries:
+
+```{r setup}
+# Load required libraries
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+```
+
+---
+
+# Part A: Data Setup and Exploration (15 points)
+
+## A.1 Simulated Data
+
+We will use simulated data where the true relationship is known but complex:
+
+$$f(x) = 50 + 15x - 0.3x^2 + 30\sin(x/3) + 10\cos(x)$$
+
+This combines a quadratic trend with multiple periodic components, making it challenging to predict.
+
+```{r simulate-data}
+# Generate simulated  data
+set.seed(5560)
+n <- 500
+x <- sort(runif(n, min = 0, max = 30))
+f_true <- 50 + 15*x - 0.3*x^2 + 30*sin(x/3) + 10*cos(x)
+y <- f_true + rnorm(n, mean = 0, sd = 15)
+data <- data.frame(y = y, x = x, f_true = f_true)
+```
+
+## Task A.1: Visualize the data
+
+Create a scatter plot of the data with the true function overlaid as a red dashed line.
+
+```{r plot-data}
+# YOUR CODE HERE: Create scatter plot with true function
+ggplot(data, aes(x = x, y = y)) +
+  geom_point(alpha = 0.5) +
+  geom_line(aes(y = f_true), 
+            color = "red", 
+            linetype = "dashed", 
+            linewidth = 1) +
+  labs(
+    title = "Simulated Data with True Function",
+    x = "x",
+    y = "y"
+  )
+
+```
+
+#### **Question 1 (3 points):** Describe the pattern you see in the data. What makes this relationship challenging for a simple linear model?
+
+**Your Answer:**
+The data clearly show a non-linear relationship between x and y. Instead of following a straight line, the pattern curves upward at first, then turns downward, and includes visible wave-like fluctuations.
+Because of this complexity, a simple linear model is not suitable. A linear model can only fit one straight trend, so it would miss both the changing shape of the relationship and the repeating patterns, leading to underfitting and so can not show the true relationship.
+
+
+---
+
+## Task A.2: Explore different span values
+
+Fit LOESS models with three different span values (0.2, 0.5, 0.8) using `degree = 1`. Plot all three fits on the same graph along with the true function.
+
+```{r explore-spans}
+# YOUR CODE HERE: Fit LOESS with span = 0.2, 0.5, 0.8 and plot
+# Fit LOESS models with different spans (degree fixed at 1)
+lo_02 <- loess(y ~ x, data = data, span = 0.2, degree = 1)
+lo_05 <- loess(y ~ x, data = data, span = 0.5, degree = 1)
+lo_08 <- loess(y ~ x, data = data, span = 0.8, degree = 1)
+
+# Create a plotting dataset 
+data_plot <- data %>%
+  mutate(
+    fit_02 = predict(lo_02, newdata = data.frame(x = x)),
+    fit_05 = predict(lo_05, newdata = data.frame(x = x)),
+    fit_08 = predict(lo_08, newdata = data.frame(x = x))
+  )
+
+# Plot: data points + true function + three LOESS fits
+ggplot(data_plot, aes(x = x)) +
+  geom_point(aes(y = y), alpha = 0.5, color = "grey40") +
+  geom_line(aes(y = f_true),
+            color = "red",
+            linetype = "dashed",
+            linewidth = 1) +
+  geom_line(aes(y = fit_02), color = "blue", linewidth = 1) +
+  geom_line(aes(y = fit_05), color = "black", linewidth = 1) +
+  geom_line(aes(y = fit_08), color = "green", linewidth = 1) +
+  labs(
+    title = "LOESS Fits with Different Span Values (degree = 1)",
+    y = "y"
+  )
+
+
+
+```
+
+#### **Question 2 (4 points):** How does the span parameter affect the fitted curve? Which span appears to best capture the true relationship?
+
+**Your Answer:**
+Span = 0.2 (blue) → very wiggly
+Span = 0.5 (black) → smooth but flexible
+Span = 0.8 (green) → very smooth, misses details
+
+The span parameter controls how much smoothing the LOESS curve applies. With a small span like 0.2, the model looks at only a few nearby points, so the curve bends a lot and closely follows the data, including noise. With a larger span such as 0.8, the model averages over many points, producing a much smoother curve that can miss important details. Based on the plot, a span of 0.5 provides the best balance, as it captures the main shape of the true relationship while avoiding unnecessary wiggles caused by noise.
+
+#### **Question 3 (4 points):** Explain the bias-variance tradeoff in the context of the span parameter. Which span has high bias? Which has high variance?
+
+**Your Answer:**
+Wiggly curve → high variance
+Over-smooth curve → high bias
+
+The span parameter shows the bias–variance tradeoff in LOESS regression. When the span is small (0.2), the curve reacts too strongly to random noise, making it overly wiggly and unstable. When the span is large (0.8), the curve becomes too smooth and misses key nonlinear features of the true pattern. The middle value (0.5) strikes a good balance by smoothing out noise while still adapting to the underlying structure of the data.
+
+#### **Question 4 (4 points):** Can you determine the optimal span just by looking at these plots? Why or why not?
+
+**Your Answer:**
+No, the optimal span cannot be chosen based only on how the plot looks.
+Although the curve with span = 0.5 appears to fit the data well visually, this judgment is subjective and does not tell us how well the model would predict new data.
+To make a more objective choice, we would need a quantitative approach such as cross-validation or bootstrapping, which evaluates predictive performance on data the model has not seen before.
+
+---
+
+# Part B: Simple Train-Test Split (20 points)
+
+## Task B.1: Single train-test split
+
+Implement a grid search to find the optimal span using a single 80/20 train-test split.
+
+**Requirements:**
+- Use `degree = 1` (fixed)
+- Search span values from 0.1 to 0.9 by 0.05
+- Calculate RMSPE on the test set for each span value
+- Report the optimal span and its RMSPE
+
+```{r single-split}
+# Create hyperparameter grid
+grid_span <- seq(from = 0.1, to = 0.9, by = 0.05)
+
+# YOUR CODE HERE: Implement single train-test split grid search
+# 1. Set seed to 100
+set.seed(100)
+
+# 2. Split data 80/20
+n <- nrow(data)
+train_id <- sample(1:n, size = 0.8 * n)
+train <- data[train_id, ]
+test  <- data[-train_id, ]
+
+# 3. For each span, fit LOESS and calculate RMSPE
+rmspe <- function(y_true, y_pred) {
+  sqrt(mean((y_true - y_pred)^2, na.rm = TRUE))
+}
+
+# 4. Find optimal span
+results <- tibble(span = grid_span) %>%
+  mutate(
+    # train: fit LOESS on training data
+    model = map(span, function(s) {
+      loess(y ~ x, data = train, span = s, degree = 1)
+    }),
+    # test: predict on test data (uses test$x internally)
+    yhat = map(model, function(m) {
+      predict(m, newdata = test)
+    }),
+    # evaluate: compare predicted vs true test y
+    test_rmspe = map_dbl(yhat, function(p) {
+      rmspe(test$y, p)
+    })
+  ) %>%
+  select(span, test_rmspe) %>%
+  arrange(test_rmspe)
+
+# Best span (lowest RMSPE)
+best <- results %>% slice(1)
+best
+
+# show top 5
+results %>% slice_head(n = 5)
+
+```
+
+#### **Question 5 (5 points):** What is the optimal span found with seed = 100? What is the corresponding RMSPE?
+
+**Your Answer:**
+With seed = 100, the optimal span selected by the single 80/20 train–test split is 0.15.
+The corresponding test RMSPE is approximately 13.98, indicating this span gives the best predictive performance among the values considered for this split.
+
+---
+
+## Task B.2: Demonstrate instability
+
+Repeat the grid search with three different seeds (200, 300, 400) to show how the optimal span varies.
+
+```{r instability-demo}
+# YOUR CODE HERE: Run grid search with seeds 200, 300, 400
+# Store the optimal span and RMSPE for each
+
+# Reuse RMSPE function
+rmspe <- function(y_true, y_pred) {
+  sqrt(mean((y_true - y_pred)^2, na.rm = TRUE))
+}
+
+
+# Seeds to test
+seeds <- c(200, 300, 400)
+
+# Store results
+instability_results <- map_dfr(seeds, function(s) {
+  
+  set.seed(s)
+  
+  # 80/20 split
+  n <- nrow(data)
+  train_id <- sample(1:n, size = 0.8 * n)
+  train <- data[train_id, ]
+  test  <- data[-train_id, ]
+  
+  # Grid search
+  results <- tibble(span = grid_span) %>%
+    mutate(
+      model = map(span, ~ loess(y ~ x, data = train, span = .x, degree = 1)),
+      yhat  = map(model, ~ predict(.x, newdata = test)),
+      test_rmspe = map_dbl(yhat, ~ rmspe(test$y, .x))
+    )
+  
+  # Best span for this seed
+  best <- results %>% arrange(test_rmspe) %>% slice(1)
+  
+  tibble(
+    seed = s,
+    optimal_span = best$span,
+    test_rmspe = best$test_rmspe
+  )
+})
+
+instability_results
+
+```
+
+#### **Question 6 (5 points):** Report the optimal span found with each seed. How much does it vary?
+
+**Your Answer:**
+Using different random seeds leads to different optimal span values. With seeds 200 and 300, the optimal span is 0.15, while with seed 400, the optimal span is 0.10. Although the selected spans are close in value, they are not identical, showing that the choice of optimal span varies due to randomness in the train–test split.
+
+#### **Question 7 (5 points):** Why does the optimal span change with different random splits? What does this tell us about using a single train-test split for hyperparameter tuning?
+
+**Your Answer:**
+The optimal span changes because each random split produces a different training set and test set. Since LOESS is sensitive to local data structure, small changes in which observations fall into the training or test set can affect model performance and the resulting RMSPE. This shows that a single train–test split introduces randomness into hyperparameter tuning and can lead to unstable or inconsistent results.
+
+#### **Question 8 (5 points):** Based on this exercise, would you trust the optimal span from a single split? What approach would be more reliable?
+
+**Your Answer:**
+No, the optimal span from a single train–test split should not be fully trusted because it depends heavily on the particular random split used. A more reliable approach would be cross-validation, such as k-fold cross-validation or repeated resampling, which averages performance across multiple splits and reduces the impact of randomness.
+
+---
+
+# Part C: 10-Fold Cross-Validation (25 points)
+
+## Task C.1: Implement nested CV
+
+Implement proper nested cross-validation with the **correct loop structure**:
+
+- **Outer loop:** 10 iterations with random 80/20 splits creating `modata` (model data) and `test` set
+- **Inner structure:** For EACH hyperparameter, calculate mean RMSPE across k folds, then select
+- Use `degree = 1`
+- Report the selected span and test RMSPE for each outer iteration
+
+**IMPORTANT: Loop Order Matters!**
+
+The hyperparameter loop must be **OUTSIDE** and the CV folds loop must be **INSIDE**:
+
+```
+for each hyperparameter setting:     # OUTER - loop over grid
+    for each fold i in 1:k:          # INNER - loop over CV folds
+        train on k-1 folds, validate on fold i
+    average RMSPE across all k folds for THIS hyperparameter
+select hyperparameter with lowest average RMSPE
+```
+
+This ensures we average errors FIRST, then select - NOT select per-fold then average selections!
+
+```{r nested-cv}
+# YOUR CODE HERE: Implement nested 10-fold CV
+# ----- Helper: RMSPE function -----
+rmspe <- function(actual, pred) {
+  sqrt(mean((actual - pred)^2, na.rm = TRUE))
+}
+
+# Hyperparameter grid (same idea as Part B)
+grid_span <- seq(from = 0.1, to = 0.9, by = 0.05)
+
+# Settings
+set.seed(123)      # just to make the whole experiment reproducible
+B <- 10            # outer iterations
+k <- 10            # inner CV folds
+
+# Container for outer results
+outer_results <- tibble(
+  outer_iter = 1:B,
+  selected_span = NA_real_,
+  test_rmspe = NA_real_
+)
+
+# ----- OUTER LOOP: 10 random 80/20 splits -----
+for (b in 1:B) {
+
+  # 1) Create outer train/test split (modata/test)
+  n <- nrow(data)
+  idx_train <- sample(1:n, size = round(0.8 * n), replace = FALSE)
+
+  modata <- data[idx_train, ]
+  test   <- data[-idx_train, ]
+
+  # 2) INNER LOOP: for each span, do 10-fold CV on modata
+  fold_id <- sample(rep(1:k, length.out = nrow(modata)))  # random fold assignment
+
+  mean_cv_rmspe <- numeric(length(grid_span))
+
+  # span loop OUTSIDE 
+  for (s in seq_along(grid_span)) {
+
+    span_val <- grid_span[s]
+    fold_rmspe <- numeric(k)
+
+    # folds loop INSIDE 
+    for (i in 1:k) {
+
+      train_fold <- modata[fold_id != i, ]
+      val_fold   <- modata[fold_id == i, ]
+
+      fit <- loess(y ~ x, data = train_fold, span = span_val, degree = 1)
+
+      pred_val <- predict(fit, newdata = data.frame(x = val_fold$x))
+      fold_rmspe[i] <- rmspe(val_fold$y, pred_val)
+    }
+
+    mean_cv_rmspe[s] <- mean(fold_rmspe, na.rm = TRUE)
+  }
+
+  # 3) Select best span from inner CV
+  best_span <- grid_span[which.min(mean_cv_rmspe)]
+
+  # 4) Fit on all modata with best span, evaluate on outer test set
+  final_fit <- loess(y ~ x, data = modata, span = best_span, degree = 1)
+
+  pred_test <- predict(final_fit, newdata = data.frame(x = test$x))
+  test_err  <- rmspe(test$y, pred_test)
+
+  # 5) Store results
+  outer_results$selected_span[b] <- best_span
+  outer_results$test_rmspe[b] <- test_err
+}
+
+outer_results
+mean(outer_results$test_rmspe)
+sd(outer_results$test_rmspe)
+
+```
+
+#### **Question 9 (5 points):** Create a table showing the selected span and test RMSPE for each of the 10 outer iterations.
+
+**Your Answer:**
+The table is shown in the output above, summarizes the results from the 10 outer iterations of nested cross-validation. For each iteration, the span selected by inner cross-validation and the corresponding test RMSPE are reported.
+The selected span is 0.15 in 9 out of 10 iterations
+Test RMSPE values vary moderately across iterations, reflecting randomness in the outer train–test splits
+
+#### **Question 10 (5 points):** What is the mean and standard deviation of the test RMSPE across the 10 outer iterations?
+
+**Your Answer:**
+The mean test RMSPE across the 10 outer iterations is approximately 15.7, with a standard deviation of about 0.9. This shows that while prediction error varies across different train–test splits, overall performance is fairly stable.
+
+#### **Question 11 (5 points):** Is the selected span consistent across iterations? What span would you recommend?
+
+**Your Answer:**
+Yes, the selected span is highly consistent across iterations.
+The span 0.15 is chosen in 9 out of 10 outer iterations, indicating strong agreement from the inner cross-validation process.
+
+Recommended span: 0.15
+This span provides a good balance between flexibility and smoothness, capturing the nonlinear structure of the data without overfitting. The consistency across iterations suggests this choice is reliable and preferable to spans chosen from a single train–test split.
+
+
+## Task C.2: Extend to tuning both span AND degree
+
+Now tune both `span` and `degree` (1 or 2) using the same nested CV structure.
+
+```{r nested-cv-both}
+# Create grid with both span and degree
+grid_both <- expand.grid(
+  span = seq(from = 0.1, to = 0.9, by = 0.1),
+  degree = c(1, 2)
+)
+
+# YOUR CODE HERE: Implement nested CV tuning both span and degree
+# ----- Helper: RMSPE function -----
+rmspe <- function(actual, pred) {
+  sqrt(mean((actual - pred)^2, na.rm = TRUE))
+}
+
+# Settings
+set.seed(123)
+B <- 10   # outer iterations
+k <- 10   # inner folds
+
+# Container for results
+outer_results_both <- tibble(
+  outer_iter = 1:B,
+  selected_span = NA_real_,
+  selected_degree = NA_integer_,
+  test_rmspe = NA_real_
+)
+
+# ----- OUTER LOOP: 10 random 80/20 splits -----
+for (b in 1:B) {
+
+  # 1) Outer split
+  n <- nrow(data)
+  idx_train <- sample(1:n, size = round(0.8 * n), replace = FALSE)
+
+  modata <- data[idx_train, ]
+  test   <- data[-idx_train, ]
+
+  # 2) Make fold IDs inside modata
+  fold_id <- sample(rep(1:k, length.out = nrow(modata)))
+
+  # Store mean CV RMSPE for EACH combo (row of grid_both)
+  mean_cv_rmspe <- numeric(nrow(grid_both))
+
+  # 3) Hyperparameter loop OUTSIDE (span+degree)
+  for (g in 1:nrow(grid_both)) {
+
+    span_val <- grid_both$span[g]
+    deg_val  <- grid_both$degree[g]
+
+    fold_rmspe <- numeric(k)
+
+    # 4) Fold loop INSIDE
+    for (i in 1:k) {
+
+      train_fold <- modata[fold_id != i, ]
+      val_fold   <- modata[fold_id == i, ]
+
+      fit <- loess(y ~ x,
+                   data = train_fold,
+                   span = span_val,
+                   degree = deg_val)
+
+      pred_val <- predict(fit, newdata = data.frame(x = val_fold$x))
+      fold_rmspe[i] <- rmspe(val_fold$y, pred_val)
+    }
+
+    # Average FIRST for this hyperparameter setting
+    mean_cv_rmspe[g] <- mean(fold_rmspe, na.rm = TRUE)
+  }
+
+  # 5) Select best (span, degree)
+  best_idx <- which.min(mean_cv_rmspe)
+  best_span <- grid_both$span[best_idx]
+  best_deg  <- grid_both$degree[best_idx]
+
+  # 6) Fit on all modata using best combo, evaluate on outer test
+  final_fit <- loess(y ~ x,
+                     data = modata,
+                     span = best_span,
+                     degree = best_deg)
+
+  pred_test <- predict(final_fit, newdata = data.frame(x = test$x))
+  test_err <- rmspe(test$y, pred_test)
+
+  # 7) Store results
+  outer_results_both$selected_span[b] <- best_span
+  outer_results_both$selected_degree[b] <- best_deg
+  outer_results_both$test_rmspe[b] <- test_err
+}
+
+# Outputs 
+outer_results_both
+mean(outer_results_both$test_rmspe)
+sd(outer_results_both$test_rmspe)
+
+
+
+
+```
+
+#### **Question 12 (5 points):** What combination of span and degree gives the best results? Does tuning degree in addition to span improve prediction?
+
+**Your Answer:**
+The best combination is span = 0.2 and degree = 2.
+This choice appears in all 10 runs, which shows the result is stable and reliable.
+Compared to tuning span alone, Allowing the degree to change gives a small improvement in accuracy because the model can better follow the curved shape of the data.
+
+#### **Question 13 (5 points):** Compare the mean RMSPE from tuning only span (degree=1) vs tuning both. Is the improvement meaningful?
+
+**Your Answer:**
+When only the span is tuned (with degree fixed at 1), the mean RMSPE is about 15.7. When both span and degree are tuned, the mean RMSPE drops slightly to around 15.6. Although the improvement is small, it is consistent, which suggests that allowing the degree to vary provides a modest benefit. In particular, the frequent selection of degree = 2 indicates that the extra local flexibility helps the model better capture the nonlinear structure in the data.
+---
+
+# Part D: Bootstrap Cross-Validation (25 points)
+
+## Task D.1: Implement Bootstrap CV
+
+Implement bootstrap cross-validation with OOB validation using the **correct loop structure**:
+
+- **Outer loop:** 8 iterations with random 80/20 splits creating `modata` (model data) and `test` set
+- **Inner structure:** For EACH hyperparameter, run B bootstrap iterations and average RMSPE, then select
+- Use the same grid as Part C (both span and degree)
+- Report results for each outer iteration
+
+**IMPORTANT: Loop Order Matters!**
+
+Same principle as k-fold CV - hyperparameter loop **OUTSIDE**, bootstrap loop **INSIDE**:
+
+```
+for each hyperparameter setting:     # OUTER - loop over grid
+    for j in 1:B:                    # INNER - loop over bootstrap iterations
+        sample with replacement → train set
+        OOB observations → validation set
+        calculate RMSPE
+    average RMSPE across all B iterations for THIS hyperparameter
+select hyperparameter with lowest average RMSPE
+```
+
+```{r bootstrap-cv}
+# YOUR CODE HERE: Implement bootstrap CV
+# Part D: Bootstrap Cross-Validation (use existing data)
+
+# Use the SAME data from Part A
+df <- data
+
+# ----- Helper: RMSPE -----
+rmspe <- function(actual, pred) {
+  sqrt(mean((actual - pred)^2, na.rm = TRUE))
+}
+
+# ----- Grid: span + degree -----
+grid_both <- expand.grid(
+  span = seq(0.1, 0.9, by = 0.1),
+  degree = c(1, 2)
+)
+
+# ----- Settings -----
+set.seed(123)
+outer_iters <- 8
+B_boot <- 100
+
+# ----- Store outer results -----
+outer_results_boot <- tibble(
+  outer_iter      = 1:outer_iters,
+  selected_span   = NA_real_,
+  selected_degree = NA_integer_,
+  test_rmspe      = NA_real_
+)
+
+# ===== OUTER LOOP =====
+for (b in 1:outer_iters) {
+
+  # 80/20 split
+n <- nrow(df)
+idx_train <- sample(1:n, size = round(0.8 * n), replace = FALSE)
+  modata <- df[idx_train, ]
+  test   <- df[-idx_train, ]
+
+  mean_boot_rmspe <- numeric(nrow(grid_both))
+
+  # ---- Hyperparameter loop (OUTSIDE) ----
+  for (g in 1:nrow(grid_both)) {
+
+    span_val <- grid_both$span[g]
+    deg_val  <- grid_both$degree[g]
+
+    boot_rmspe <- numeric(B_boot)
+
+    # ---- Bootstrap loop (INSIDE) ----
+    for (j in 1:B_boot) {
+
+      idx_boot <- sample(1:nrow(modata), replace = TRUE)
+      boot_train <- modata[idx_boot, ]
+
+      oob_idx <- setdiff(1:nrow(modata), unique(idx_boot))
+      if (length(oob_idx) == 0) {
+        boot_rmspe[j] <- NA
+        next
+      }
+
+      oob_val <- modata[oob_idx, ]
+
+      fit <- loess(
+        y ~ x,
+        data = boot_train,
+        span = span_val,
+        degree = deg_val
+      )
+
+      pred_oob <- predict(fit, newdata = data.frame(x = oob_val$x))
+      boot_rmspe[j] <- rmspe(oob_val$y, pred_oob)
+    }
+
+    mean_boot_rmspe[g] <- mean(boot_rmspe, na.rm = TRUE)
+  }
+
+  # Select best hyperparameters
+  best_idx <- which.min(mean_boot_rmspe)
+  best_span <- grid_both$span[best_idx]
+  best_deg  <- grid_both$degree[best_idx]
+
+  # Final fit + test
+  final_fit <- loess(y ~ x, data = modata,
+                     span = best_span, degree = best_deg)
+
+  pred_test <- predict(final_fit, newdata = data.frame(x = test$x))
+  outer_results_boot$selected_span[b] <- best_span
+  outer_results_boot$selected_degree[b] <- best_deg
+  outer_results_boot$test_rmspe[b] <- rmspe(test$y, pred_test)
+}
+
+outer_results_boot
+mean(outer_results_boot$test_rmspe)
+sd(outer_results_boot$test_rmspe)
+
+
+```
+
+#### **Question 14 (5 points):** Report the mean and SD of test RMSPE from bootstrap CV.
+
+**Your Answer:** 
+The mean test RMSPE across the 8 outer bootstrap iterations is 15.39, with a standard deviation of 0.83. This indicates that prediction error is relatively stable across different random splits.
+
+#### **Question 15 (5 points):** Compare the bootstrap CV results to the k-fold CV results from Part C. Which method gave more stable results (lower SD)?
+
+**Your Answer:**
+Bootstrap CV produced more stable results. Its test RMSPE standard deviation (0.83) is lower than that of the nested k-fold CV (≈ 0.96), indicating less variability across outer iterations.
+
+#### **Question 16 (5 points):** The OOB validation set is approximately what percentage of the data? How does this compare to 10-fold CV where each validation fold is 10% of the data?
+
+**Your Answer:**
+In bootstrap sampling, the OOB validation set contains approximately 36.8% of the data on average. This is substantially larger than the 10% validation size used in each fold of 10-fold cross-validation.
+
+#### **Question 17 (5 points):** Based on your results, which method would you recommend for hyperparameter tuning: k-fold CV or bootstrap CV? Justify your choice.
+
+**Your Answer:**
+I would recommend bootstrap cross-validation. In this analysis, bootstrap CV produced more stable error estimates (lower standard deviation) than k-fold CV, leading to more reliable hyperparameter selection.
+
+
+#### **Question 18 (5 points):** Did bootstrap CV select different hyperparameters than k-fold CV? Explain any differences.
+
+**Your Answer:**
+No. Bootstrap CV selected the same hyperparameters as nested k-fold CV—span = 0.2 and degree = 2—in most iterations. This agreement across methods increases confidence that this combination is genuinely optimal, with bootstrap CV providing slightly more stable performance estimates.
+
+
+---
+
+# Part E: Benchmark Comparison (15 points)
+
+## Task E.1: Fit benchmark models
+
+Using the same nested CV structure (10 outer iterations), evaluate these benchmark models:
+1. **Linear regression** (no tuning needed)
+2. **Polynomial regression (degree 4)** (no tuning needed)
+3. **LOESS with default span (0.75) and degree 1** (no tuning needed)
+
+Compare with your **tuned LOESS** results from Part C.
+
+```{r benchmarks}
+
+library(tidyverse)
+
+# Use the dataset already created in Part A
+df <- data
+stopifnot(is.data.frame(df), all(c("x","y") %in% names(df)))
+
+# Helper: RMSPE
+rmspe <- function(actual, pred) sqrt(mean((actual - pred)^2, na.rm = TRUE))
+
+# Outer loop settings 
+set.seed(123)
+B <- 10
+
+# Store test RMSPEs for each model per outer split
+bench_results <- tibble(
+  outer_iter = 1:B,
+  lm_rmspe = NA_real_,
+  poly4_rmspe = NA_real_,
+  loess_default_rmspe = NA_real_,
+  loess_tuned_rmspe = NA_real_
+)
+
+for (b in 1:B) {
+
+  # 80/20 outer split
+  n_all <- nrow(df)
+  idx_train <- sample(seq_len(n_all), size = round(0.8 * n_all), replace = FALSE)
+
+  modata <- df[idx_train, , drop = FALSE]
+  test   <- df[-idx_train, , drop = FALSE]
+
+  # 1) Linear regression
+  fit_lm <- lm(y ~ x, data = modata)
+  bench_results$lm_rmspe[b] <- rmspe(test$y, predict(fit_lm, newdata = test))
+
+  # 2) Polynomial regression (degree 4)
+  fit_poly4 <- lm(y ~ poly(x, 4, raw = TRUE), data = modata)
+  bench_results$poly4_rmspe[b] <- rmspe(test$y, predict(fit_poly4, newdata = test))
+
+  # 3) LOESS default (span=0.75, degree=1)
+  fit_loess_default <- loess(y ~ x, data = modata, span = 0.75, degree = 1)
+  pred_default <- predict(fit_loess_default, newdata = data.frame(x = test$x))
+  bench_results$loess_default_rmspe[b] <- rmspe(test$y, pred_default)
+
+  # 4) LOESS tuned (use Part C tuned choice)
+  fit_loess_tuned <- loess(y ~ x, data = modata, span = 0.2, degree = 2)
+  pred_tuned <- predict(fit_loess_tuned, newdata = data.frame(x = test$x))
+  bench_results$loess_tuned_rmspe[b] <- rmspe(test$y, pred_tuned)
+}
+
+# Q19: Summary table
+summary_table <- tibble(
+  Model = c("Linear regression",
+            "Polynomial regression (degree 4)",
+            "LOESS default (span=0.75, degree=1)",
+            "LOESS tuned (span=0.2, degree=2)"),
+  Mean_RMSPE = c(mean(bench_results$lm_rmspe, na.rm = TRUE),
+                 mean(bench_results$poly4_rmspe, na.rm = TRUE),
+                 mean(bench_results$loess_default_rmspe, na.rm = TRUE),
+                 mean(bench_results$loess_tuned_rmspe, na.rm = TRUE)),
+  SD_RMSPE = c(sd(bench_results$lm_rmspe, na.rm = TRUE),
+               sd(bench_results$poly4_rmspe, na.rm = TRUE),
+               sd(bench_results$loess_default_rmspe, na.rm = TRUE),
+               sd(bench_results$loess_tuned_rmspe, na.rm = TRUE))
+)
+
+summary_table
+
+# Q20: Improvement (default - tuned)
+improvement <- mean(bench_results$loess_default_rmspe, na.rm = TRUE) -
+               mean(bench_results$loess_tuned_rmspe, na.rm = TRUE)
+improvement
+
+```
+
+
+#### **Question 19 (5 points):** Create a summary table comparing all methods with columns: Model, Mean RMSPE, SD RMSPE
+
+**Your Answer:**
+
+| Model                                   | Mean RMSPE | SD RMSPE |
+|----------------------------------------|-----------:|---------:|
+| Linear regression                       | 27.95      | 1.80     |
+| Polynomial regression (degree 4)        | 17.66      | 1.08     |
+| LOESS default (span = 0.75, degree = 1)| 25.23      | 1.45     |
+| LOESS tuned (span = 0.2, degree = 2)   | **15.53**  | **1.08** |
+
+Tuned LOESS (span = 0.2, degree = 2) has the lowest mean RMSPE (15.53), so it is the most accurate model for this nonlinear relationship.
+Its SD (1.08) is also relatively low, meaning performance is stable across outer splits, while linear and default LOESS perform much worse (higher error and/or higher variability).
+ 
+####**Question 20 (5 points):** How much did hyperparameter tuning improve RMSPE compared to using the default span (0.75)?
+ 
+**Your Answer:**
+Hyperparameter tuning substantially improved performance.
+The mean RMSPE decreased from 25.23 (default LOESS) to 15.53 (tuned LOESS), an improvement of approximately 9.70 RMSPE points.
+This represents a large and meaningful reduction in prediction error.
+
+
+#### **Question 21 (5 points):** Based on your benchmark comparison, which model would you recommend for this data? Consider both accuracy (mean RMSPE) and reliability (SD). Is the improvement from tuning worth the computational cost?
+
+**Your Answer:**
+I would recommend the tuned LOESS model (span = 0.2, degree = 2).
+It achieves the lowest mean RMSPE among all models while maintaining a low and stable SD, indicating both high accuracy and reliable performance across outer splits.
+Although hyperparameter tuning requires additional computation, the large and consistent reduction in RMSPE makes the extra cost worthwhile for this dataset.
+# Submission Checklist
+
+- [*] All code chunks completed and running without errors
+- [*] All 21 questions answered with complete explanations
+- [*] Summary tables created for each part
+- [*] Clear interpretations connecting results to self-learning concepts
+- [*] Team members listed in author field
+- [*] LLM usage disclosed (if applicable): I used LLM to help draft/clean R code and to refine explanations; I reviewed and edited the outputs to match my results.
+- [*] Document renders to HTML successfully
+
+---
+
+**Good luck with your analysis!**
